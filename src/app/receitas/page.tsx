@@ -1,0 +1,241 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { supabase } from '@/lib/supabase-browser';
+import { Ingredient, RecipeWithItems } from '@/lib/types';
+import { baseUnitLabel, formatBRL, recipeTotalCost, recipeUnitCost } from '@/lib/calculations';
+
+interface DraftItem {
+  ingredient_id: string;
+  qty_used: string;
+}
+
+const emptyForm = {
+  name: '',
+  yield_qty: '',
+  packaging_cost: '',
+};
+
+export default function ReceitasPage() {
+  const [recipes, setRecipes] = useState<RecipeWithItems[]>([]);
+  const [ingredients, setIngredients] = useState<Ingredient[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState(emptyForm);
+  const [items, setItems] = useState<DraftItem[]>([{ ingredient_id: '', qty_used: '' }]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function loadData() {
+    setLoading(true);
+    const [recipesRes, ingredientsRes] = await Promise.all([
+      supabase.from('recipes').select('*, recipe_ingredients(*, ingredient:ingredients(*))').order('name'),
+      supabase.from('ingredients').select('*').order('name'),
+    ]);
+    if (recipesRes.error) setError(recipesRes.error.message);
+    else setRecipes(recipesRes.data as unknown as RecipeWithItems[]);
+    if (ingredientsRes.data) setIngredients(ingredientsRes.data as Ingredient[]);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  function updateItem(idx: number, field: keyof DraftItem, value: string) {
+    const copy = [...items];
+    copy[idx] = { ...copy[idx], [field]: value };
+    setItems(copy);
+  }
+
+  function addItemRow() {
+    setItems([...items, { ingredient_id: '', qty_used: '' }]);
+  }
+
+  function removeItemRow(idx: number) {
+    setItems(items.filter((_, i) => i !== idx));
+  }
+
+  async function handleSave() {
+    setError(null);
+    const validItems = items.filter((i) => i.ingredient_id && i.qty_used);
+    if (!form.name || !form.yield_qty || validItems.length === 0) {
+      setError('Preencha nome, rendimento e ao menos um ingrediente.');
+      return;
+    }
+    setSaving(true);
+    const { data: recipe, error: recipeError } = await supabase
+      .from('recipes')
+      .insert({
+        name: form.name,
+        yield_qty: Number(form.yield_qty),
+        packaging_cost: Number(form.packaging_cost) || 0,
+      })
+      .select()
+      .single();
+
+    if (recipeError || !recipe) {
+      setError(recipeError?.message || 'Erro ao salvar receita.');
+      setSaving(false);
+      return;
+    }
+
+    const { error: itemsError } = await supabase.from('recipe_ingredients').insert(
+      validItems.map((i) => ({
+        recipe_id: recipe.id,
+        ingredient_id: i.ingredient_id,
+        qty_used: Number(i.qty_used),
+      }))
+    );
+
+    setSaving(false);
+    if (itemsError) {
+      setError(itemsError.message);
+      return;
+    }
+
+    setForm(emptyForm);
+    setItems([{ ingredient_id: '', qty_used: '' }]);
+    setShowForm(false);
+    loadData();
+  }
+
+  async function handleDeleteRecipe(recipeId: string, name: string) {
+    const confirmed = window.confirm(`Excluir a receita "${name}"? Essa ação não pode ser desfeita.`);
+    if (!confirmed) return;
+    const { error } = await supabase.from('recipes').delete().eq('id', recipeId);
+    if (error) {
+      alert(`Erro ao excluir: ${error.message}`);
+      return;
+    }
+    loadData();
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h1 className="font-display text-2xl">Receitas</h1>
+        <button className="btn-primary" onClick={() => setShowForm((v) => !v)}>
+          {showForm ? 'Fechar' : '+ Nova receita'}
+        </button>
+      </div>
+
+      {showForm && (
+        <div className="card space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label>Nome do produto</label>
+              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+            </div>
+            <div>
+              <label>Rendimento (unidades)</label>
+              <input
+                type="number"
+                value={form.yield_qty}
+                onChange={(e) => setForm({ ...form, yield_qty: e.target.value })}
+              />
+            </div>
+            <div>
+              <label>Embalagem (R$/un)</label>
+              <input
+                type="number"
+                value={form.packaging_cost}
+                onChange={(e) => setForm({ ...form, packaging_cost: e.target.value })}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <label>Ingredientes utilizados</label>
+            {items.map((item, idx) => {
+              const ing = ingredients.find((i) => i.id === item.ingredient_id);
+              return (
+                <div key={idx} className="flex gap-2 items-center">
+                  <select
+                    className="flex-1"
+                    value={item.ingredient_id}
+                    onChange={(e) => updateItem(idx, 'ingredient_id', e.target.value)}
+                  >
+                    <option value="">Selecione o ingrediente</option>
+                    {ingredients.map((i) => (
+                      <option key={i.id} value={i.id}>
+                        {i.name}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    className="w-28"
+                    type="number"
+                    placeholder={ing ? baseUnitLabel(ing.unit) : 'qtd'}
+                    value={item.qty_used}
+                    onChange={(e) => updateItem(idx, 'qty_used', e.target.value)}
+                  />
+                  <button className="text-muted text-sm px-2" onClick={() => removeItemRow(idx)}>
+                    remover
+                  </button>
+                </div>
+              );
+            })}
+            <button className="btn-secondary text-sm" onClick={addItemRow}>
+              + adicionar ingrediente
+            </button>
+          </div>
+
+          {error && <p className="text-sm text-rose">{error}</p>}
+          <div className="flex gap-2">
+            <button className="btn-primary" disabled={saving} onClick={handleSave}>
+              {saving ? 'Salvando...' : 'Salvar receita'}
+            </button>
+            <button className="btn-secondary" onClick={() => setShowForm(false)}>
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-3">
+        {loading && <p className="text-sm text-muted">Carregando...</p>}
+        {!loading && recipes.length === 0 && (
+          <p className="text-sm text-muted">Nenhuma receita cadastrada ainda.</p>
+        )}
+        {recipes.map((recipe) => (
+          <div key={recipe.id} className="card">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="font-medium">{recipe.name}</h3>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-muted">Rendimento: {recipe.yield_qty} un</span>
+                <button
+                  className="text-xs text-rose underline"
+                  onClick={() => handleDeleteRecipe(recipe.id, recipe.name)}
+                >
+                  Excluir
+                </button>
+              </div>
+            </div>
+            <div className="space-y-1 mb-3">
+              {recipe.recipe_ingredients.map((ri) => (
+                <div key={ri.id} className="flex justify-between text-sm text-muted">
+                  <span>
+                    {ri.ingredient?.name} · {ri.qty_used}
+                    {ri.ingredient ? baseUnitLabel(ri.ingredient.unit) : ''}
+                  </span>
+                  <span>{formatBRL((ri.ingredient?.cost_per_base ?? 0) * ri.qty_used)}</span>
+                </div>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-lg bg-cream px-3 py-2">
+                <p className="text-xs text-muted">Custo total</p>
+                <p className="font-medium">{formatBRL(recipeTotalCost(recipe))}</p>
+              </div>
+              <div className="rounded-lg bg-cream px-3 py-2">
+                <p className="text-xs text-muted">Custo por unidade</p>
+                <p className="font-medium">{formatBRL(recipeUnitCost(recipe))}</p>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

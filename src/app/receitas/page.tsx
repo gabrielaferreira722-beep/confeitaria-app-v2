@@ -25,6 +25,8 @@ export default function ReceitasPage() {
   const [items, setItems] = useState<DraftItem[]>([{ ingredient_id: '', qty_used: '' }]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Quando preenchido, o formulário está editando uma receita existente
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   async function loadData() {
     setLoading(true);
@@ -56,6 +58,44 @@ export default function ReceitasPage() {
     setItems(items.filter((_, i) => i !== idx));
   }
 
+  function resetForm() {
+    setForm(emptyForm);
+    setItems([{ ingredient_id: '', qty_used: '' }]);
+    setEditingId(null);
+    setError(null);
+  }
+
+  function closeForm() {
+    resetForm();
+    setShowForm(false);
+  }
+
+  function handleToggleForm() {
+    if (showForm) {
+      closeForm();
+    } else {
+      resetForm();
+      setShowForm(true);
+    }
+  }
+
+  function handleEditRecipe(recipe: RecipeWithItems) {
+    setError(null);
+    setEditingId(recipe.id);
+    setForm({
+      name: recipe.name,
+      yield_qty: String(recipe.yield_qty),
+      packaging_cost: recipe.packaging_cost ? String(recipe.packaging_cost) : '',
+    });
+    const draft = recipe.recipe_ingredients.map((ri) => ({
+      ingredient_id: (ri as { ingredient_id?: string }).ingredient_id ?? ri.ingredient?.id ?? '',
+      qty_used: String(ri.qty_used),
+    }));
+    setItems(draft.length > 0 ? draft : [{ ingredient_id: '', qty_used: '' }]);
+    setShowForm(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
   async function handleSave() {
     setError(null);
     const validItems = items.filter((i) => i.ingredient_id && i.qty_used);
@@ -64,13 +104,75 @@ export default function ReceitasPage() {
       return;
     }
     setSaving(true);
+
+    const recipeData = {
+      name: form.name,
+      yield_qty: Number(form.yield_qty),
+      packaging_cost: Number(form.packaging_cost) || 0,
+    };
+
+    if (editingId) {
+      // ---- EDIÇÃO ----
+      const { error: updateError } = await supabase
+        .from('recipes')
+        .update(recipeData)
+        .eq('id', editingId);
+
+      if (updateError) {
+        setError(updateError.message);
+        setSaving(false);
+        return;
+      }
+
+      // Guarda os ids dos itens antigos para apagar só depois de inserir os novos
+      const { data: oldItems, error: oldItemsError } = await supabase
+        .from('recipe_ingredients')
+        .select('id')
+        .eq('recipe_id', editingId);
+
+      if (oldItemsError) {
+        setError(oldItemsError.message);
+        setSaving(false);
+        return;
+      }
+
+      const { error: insertError } = await supabase.from('recipe_ingredients').insert(
+        validItems.map((i) => ({
+          recipe_id: editingId,
+          ingredient_id: i.ingredient_id,
+          qty_used: Number(i.qty_used),
+        }))
+      );
+
+      if (insertError) {
+        setError(insertError.message);
+        setSaving(false);
+        return;
+      }
+
+      const oldIds = (oldItems ?? []).map((o) => o.id);
+      if (oldIds.length > 0) {
+        const { error: deleteError } = await supabase
+          .from('recipe_ingredients')
+          .delete()
+          .in('id', oldIds);
+        if (deleteError) {
+          setError(deleteError.message);
+          setSaving(false);
+          return;
+        }
+      }
+
+      setSaving(false);
+      closeForm();
+      loadData();
+      return;
+    }
+
+    // ---- NOVA RECEITA ----
     const { data: recipe, error: recipeError } = await supabase
       .from('recipes')
-      .insert({
-        name: form.name,
-        yield_qty: Number(form.yield_qty),
-        packaging_cost: Number(form.packaging_cost) || 0,
-      })
+      .insert(recipeData)
       .select()
       .single();
 
@@ -94,9 +196,7 @@ export default function ReceitasPage() {
       return;
     }
 
-    setForm(emptyForm);
-    setItems([{ ingredient_id: '', qty_used: '' }]);
-    setShowForm(false);
+    closeForm();
     loadData();
   }
 
@@ -108,6 +208,7 @@ export default function ReceitasPage() {
       alert(`Erro ao excluir: ${error.message}`);
       return;
     }
+    if (editingId === recipeId) closeForm();
     loadData();
   }
 
@@ -115,13 +216,18 @@ export default function ReceitasPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="font-display text-2xl">Receitas</h1>
-        <button className="btn-primary" onClick={() => setShowForm((v) => !v)}>
+        <button className="btn-primary" onClick={handleToggleForm}>
           {showForm ? 'Fechar' : '+ Nova receita'}
         </button>
       </div>
 
       {showForm && (
         <div className="card space-y-4">
+          {editingId && (
+            <p className="text-sm text-muted">
+              Editando receita: <span className="font-medium">{form.name || '(sem nome)'}</span>
+            </p>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label>Nome do produto</label>
@@ -184,9 +290,9 @@ export default function ReceitasPage() {
           {error && <p className="text-sm text-rose">{error}</p>}
           <div className="flex gap-2">
             <button className="btn-primary" disabled={saving} onClick={handleSave}>
-              {saving ? 'Salvando...' : 'Salvar receita'}
+              {saving ? 'Salvando...' : editingId ? 'Salvar alterações' : 'Salvar receita'}
             </button>
-            <button className="btn-secondary" onClick={() => setShowForm(false)}>
+            <button className="btn-secondary" onClick={closeForm}>
               Cancelar
             </button>
           </div>
@@ -204,6 +310,12 @@ export default function ReceitasPage() {
               <h3 className="font-medium">{recipe.name}</h3>
               <div className="flex items-center gap-3">
                 <span className="text-xs text-muted">Rendimento: {recipe.yield_qty} un</span>
+                <button
+                  className="text-xs underline"
+                  onClick={() => handleEditRecipe(recipe)}
+                >
+                  Editar
+                </button>
                 <button
                   className="text-xs text-rose underline"
                   onClick={() => handleDeleteRecipe(recipe.id, recipe.name)}

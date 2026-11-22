@@ -13,22 +13,33 @@ export function baseUnitLabel(unit: Unit): string {
   return 'un';
 }
 
-/** Custo dos ingredientes de uma receita, somando qty_used * custo por unidade base. */
+/**
+ * Custo dos itens de uma receita:
+ * - ingredientes: qty_used * custo por unidade base
+ * - outras receitas usadas: qty_used * custo por unidade de rendimento da receita usada
+ */
 export function recipeIngredientsCost(recipe: RecipeWithItems): number {
-  return recipe.recipe_ingredients.reduce((total, item) => {
+  const ingredientsCost = recipe.recipe_ingredients.reduce((total, item) => {
     const costPerBase = item.ingredient?.cost_per_base ?? 0;
     return total + costPerBase * item.qty_used;
   }, 0);
+
+  const componentsCost = (recipe.recipe_components ?? []).reduce((total, item) => {
+    const unitCost = item.component ? recipeUnitCost(item.component) : 0;
+    return total + unitCost * item.qty_used;
+  }, 0);
+
+  return ingredientsCost + componentsCost;
 }
 
-/** Custo total da receita (ingredientes + embalagem, gás, energia e mão de obra do lote inteiro). */
+/** Custo total da receita (itens + embalagem, gás, energia e mão de obra do lote inteiro). */
 export function recipeTotalCost(recipe: RecipeWithItems): number {
   const ingredientsCost = recipeIngredientsCost(recipe);
   const overheadPerUnit = recipe.packaging_cost + recipe.gas_cost + recipe.energy_cost + recipe.labor_cost;
   return ingredientsCost + overheadPerUnit * recipe.yield_qty;
 }
 
-/** Custo por unidade vendida (o número que entra na precificação). */
+/** Custo por unidade de rendimento (un, g ou ml). Para produtos vendidos, é o número que entra na precificação. */
 export function recipeUnitCost(recipe: RecipeWithItems): number {
   return recipeTotalCost(recipe) / recipe.yield_qty;
 }

@@ -22,10 +22,14 @@ export interface PriceHistoryEntry {
 
 export type PromotionType = 'none' | 'percent' | 'value';
 
+/** Unidade em que o rendimento da receita é medido: unidades, gramas ou ml. */
+export type YieldUnit = 'un' | 'g' | 'ml';
+
 export interface Recipe {
   id: string;
   name: string;
   yield_qty: number;
+  yield_unit?: YieldUnit;
   packaging_cost: number;
   gas_cost: number;
   energy_cost: number;
@@ -46,8 +50,19 @@ export interface RecipeIngredient {
   ingredient?: Ingredient;
 }
 
+/** Outra receita usada como item dentro de uma receita (ex.: 80 g de creme de ninho). */
+export interface RecipeComponent {
+  id: string;
+  recipe_id: string;
+  component_recipe_id: string;
+  qty_used: number; // na unidade de rendimento da receita usada
+  // preenchido via join na leitura
+  component?: RecipeWithItems;
+}
+
 export interface RecipeWithItems extends Recipe {
   recipe_ingredients: RecipeIngredient[];
+  recipe_components?: RecipeComponent[];
 }
 
 export interface Channel {
